@@ -199,17 +199,30 @@ export default function App() {
   const captureStill = () => {
     if (!videoRef.current || !lev.isLevel) return;
     const v = videoRef.current;
+    const w = v.videoWidth;
+    const h = v.videoHeight;
     const canvas = document.createElement("canvas");
-    canvas.width = v.videoWidth;
-    canvas.height = v.videoHeight;
+    canvas.width = w;
+    canvas.height = h;
     canvas.getContext("2d").drawImage(v, 0, 0);
-    setSnapshot(canvas.toDataURL("image/jpeg", 0.92));
+    setSnapshot({ src: canvas.toDataURL("image/jpeg", 0.92), w, h });
     stopCamera();
+    // Reset markers to good defaults inside the visible image
+    setMarkers({
+      coinA: { x: 25, y: 70 },
+      coinB: { x: 40, y: 70 },
+      heel: { x: 60, y: 82 },
+      toe: { x: 60, y: 22 },
+    });
     setStage("align");
   };
 
   const calculate = () => {
-    if (!overlayRef.current || !coin) return null;
+    if (!overlayRef.current || !coin || !snapshot) return null;
+    // The overlay container's aspect ratio now matches the image's natural
+    // aspect ratio, with object-fill ensuring the image fills exactly.
+    // So marker percentages map 1:1 to image pixels — we can use either
+    // container space or image space; ratio of distances is invariant.
     const rect = overlayRef.current.getBoundingClientRect();
     const px = (m) => ({ x: (m.x / 100) * rect.width, y: (m.y / 100) * rect.height });
     const a = px(markers.coinA);
@@ -621,6 +634,10 @@ function SpiritLevel({ isLevel, bubble }) {
 
 /* Align */
 function AlignStage({ snapshot, coin, markers, updateMarker, overlayRef, onCalculate, onRetake }) {
+  // Use the captured image's true aspect ratio so marker percentages map 1:1
+  // to image pixel coordinates. No cropping, no distortion.
+  const aspectRatio = `${snapshot.w} / ${snapshot.h}`;
+
   return (
     <div className="flex-1 flex flex-col anim-fade-up pt-6">
       <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-3">Step 04 — Align</p>
@@ -631,8 +648,12 @@ function AlignStage({ snapshot, coin, markers, updateMarker, overlayRef, onCalcu
         Drag the <span className="text-amber-600 font-medium">amber points</span> to opposite edges of your{" "}
         {coin.label} coin, and the <span className="text-neutral-900 font-medium">dark points</span> to your heel and the tip of your longest toe.
       </p>
-      <div ref={overlayRef} className="relative bg-black rounded-2xl overflow-hidden aspect-[3/4] select-none mb-4">
-        <img src={snapshot} alt="captured" className="absolute inset-0 w-full h-full object-cover" />
+      <div
+        ref={overlayRef}
+        className="relative bg-black rounded-2xl overflow-hidden select-none mb-4 max-h-[70vh] mx-auto w-full"
+        style={{ aspectRatio }}
+      >
+        <img src={snapshot.src} alt="captured" className="absolute inset-0 w-full h-full object-fill" />
         <svg className="absolute inset-0 w-full h-full pointer-events-none">
           <line x1={`${markers.coinA.x}%`} y1={`${markers.coinA.y}%`} x2={`${markers.coinB.x}%`} y2={`${markers.coinB.y}%`}
             stroke="#F59E0B" strokeWidth="2" strokeDasharray="6 4" />
