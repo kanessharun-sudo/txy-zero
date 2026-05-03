@@ -11,11 +11,12 @@ import {
   Info,
   Ruler,
   RotateCcw,
+  Undo2,
 } from "lucide-react";
 
 /* ============================================================
-   Ten × You — Coin-Reference Sizer (v5)
-   Real measurement using Indian coin as scale reference.
+   Ten × You — Coin-Reference Sizer (v6)
+   Tap-to-place markers, mobile-bulletproof.
    ============================================================ */
 
 const LEVEL_THRESHOLD_DEG = 5;
@@ -36,6 +37,13 @@ const SIZE_CHART = [
   { cm: 27.3, size: 9 }, { cm: 27.75, size: 10 }, { cm: 28.2, size: 10 },
   { cm: 28.6, size: 11 }, { cm: 29.0, size: 11 }, { cm: 29.45, size: 12 },
   { cm: 29.9, size: 12 },
+];
+
+const POINT_SEQUENCE = [
+  { id: "coinA", label: "Left edge of coin", color: "#F59E0B", short: "Coin ◀" },
+  { id: "coinB", label: "Right edge of coin", color: "#F59E0B", short: "Coin ▶" },
+  { id: "heel", label: "Back of your heel", color: "#FFFFFF", short: "Heel" },
+  { id: "toe", label: "Tip of your longest toe", color: "#FFFFFF", short: "Toe" },
 ];
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
@@ -59,7 +67,7 @@ function convertSizes(size) {
   return { uk, us, eu };
 }
 
-/* useLeveller hook */
+/* Leveller hook */
 function useLeveller() {
   const [beta, setBeta] = useState(0);
   const [gamma, setGamma] = useState(0);
@@ -112,70 +120,24 @@ function useLeveller() {
   return { totalTilt, isLevel, source, requestSensor, simTilt, setSimTilt, bubble };
 }
 
-/* Draggable marker */
-function DraggableMarker({ x, y, onMove, label, color, containerRef }) {
-  const dragging = useRef(false);
-  const handleStart = (e) => { e.preventDefault(); e.stopPropagation(); dragging.current = true; };
-
-  useEffect(() => {
-    const handleMove = (e) => {
-      if (!dragging.current || !containerRef.current) return;
-      e.preventDefault?.();
-      const rect = containerRef.current.getBoundingClientRect();
-      const point = e.touches ? e.touches[0] : e;
-      const nx = ((point.clientX - rect.left) / rect.width) * 100;
-      const ny = ((point.clientY - rect.top) / rect.height) * 100;
-      onMove(clamp(nx, 0, 100), clamp(ny, 0, 100));
-    };
-    const handleEnd = () => (dragging.current = false);
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("touchmove", handleMove, { passive: false });
-    window.addEventListener("mouseup", handleEnd);
-    window.addEventListener("touchend", handleEnd);
-    return () => {
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("touchmove", handleMove);
-      window.removeEventListener("mouseup", handleEnd);
-      window.removeEventListener("touchend", handleEnd);
-    };
-  }, [onMove, containerRef]);
-
-  return (
-    <div onMouseDown={handleStart} onTouchStart={handleStart}
-      className="absolute -translate-x-1/2 -translate-y-1/2 cursor-grab active:cursor-grabbing touch-none"
-      style={{ left: `${x}%`, top: `${y}%` }}>
-      <div className="relative">
-        <div className="absolute inset-0 rounded-full animate-ping opacity-30" style={{ backgroundColor: color }} />
-        <div className="relative w-7 h-7 rounded-full border-[3px] border-white shadow-lg" style={{ backgroundColor: color }} />
-        <div className="absolute top-1/2 left-1/2 w-1 h-1 -translate-x-1/2 -translate-y-1/2 bg-white rounded-full" />
-        <span className="absolute left-9 top-1/2 -translate-y-1/2 text-[10px] tracking-[0.15em] uppercase font-medium text-white whitespace-nowrap px-2 py-0.5 rounded-sm"
-          style={{ backgroundColor: color }}>{label}</span>
-      </div>
-    </div>
-  );
-}
-
 /* App */
 export default function App() {
   const [stage, setStage] = useState("welcome");
   const [coin, setCoin] = useState(null);
   const [stream, setStream] = useState(null);
-  const [snapshot, setSnapshot] = useState(null);
+  const [snapshot, setSnapshot] = useState(null); // { src, w, h }
   const [cameraError, setCameraError] = useState(null);
   const [cartCount, setCartCount] = useState(0);
   const [added, setAdded] = useState(false);
   const [result, setResult] = useState(null);
   const videoRef = useRef(null);
-  const overlayRef = useRef(null);
   const lev = useLeveller();
 
-  const [markers, setMarkers] = useState({
-    coinA: { x: 25, y: 70 },
-    coinB: { x: 40, y: 70 },
-    heel: { x: 60, y: 82 },
-    toe: { x: 60, y: 22 },
-  });
+  // Markers — null until placed; positions stored as % of image natural dimensions (0–100)
+  const [points, setPoints] = useState({ coinA: null, coinB: null, heel: null, toe: null });
+  const [activeIdx, setActiveIdx] = useState(0); // which point in POINT_SEQUENCE to place next
 
+  /* Camera */
   const startCamera = useCallback(async () => {
     setCameraError(null);
     try {
@@ -206,58 +168,85 @@ export default function App() {
     canvas.height = h;
     canvas.getContext("2d").drawImage(v, 0, 0);
     setSnapshot({ src: canvas.toDataURL("image/jpeg", 0.92), w, h });
+    setPoints({ coinA: null, coinB: null, heel: null, toe: null });
+    setActiveIdx(0);
     stopCamera();
-    // Reset markers to good defaults inside the visible image
-    setMarkers({
-      coinA: { x: 25, y: 70 },
-      coinB: { x: 40, y: 70 },
-      heel: { x: 60, y: 82 },
-      toe: { x: 60, y: 22 },
-    });
     setStage("align");
   };
 
-  const calculate = () => {
-    if (!overlayRef.current || !coin || !snapshot) return null;
-    // The overlay container's aspect ratio now matches the image's natural
-    // aspect ratio, with object-fill ensuring the image fills exactly.
-    // So marker percentages map 1:1 to image pixels — we can use either
-    // container space or image space; ratio of distances is invariant.
-    const rect = overlayRef.current.getBoundingClientRect();
-    const px = (m) => ({ x: (m.x / 100) * rect.width, y: (m.y / 100) * rect.height });
-    const a = px(markers.coinA);
-    const b = px(markers.coinB);
-    const h = px(markers.heel);
-    const t = px(markers.toe);
-    const coinPx = Math.hypot(b.x - a.x, b.y - a.y);
-    const footPx = Math.hypot(t.x - h.x, t.y - h.y);
-    if (coinPx < 5) return null;
-    const cm = (footPx / coinPx) * (coin.diameter / 10);
-    return Math.round(cm * 10) / 10;
+  /* Place a point at (xPct, yPct) — both are 0–100 percentages */
+  const placePoint = (xPct, yPct) => {
+    if (activeIdx >= POINT_SEQUENCE.length) return;
+    const id = POINT_SEQUENCE[activeIdx].id;
+    setPoints((p) => ({ ...p, [id]: { x: xPct, y: yPct } }));
+    setActiveIdx((i) => Math.min(i + 1, POINT_SEQUENCE.length));
   };
 
+  /* Nudge a placed point by delta % */
+  const nudgePoint = (id, dx, dy) => {
+    setPoints((p) => {
+      if (!p[id]) return p;
+      return {
+        ...p,
+        [id]: {
+          x: clamp(p[id].x + dx, 0, 100),
+          y: clamp(p[id].y + dy, 0, 100),
+        },
+      };
+    });
+  };
+
+  /* Re-do the last placed point */
+  const undoLast = () => {
+    if (activeIdx === 0) return;
+    const newIdx = activeIdx - 1;
+    const id = POINT_SEQUENCE[newIdx].id;
+    setPoints((p) => ({ ...p, [id]: null }));
+    setActiveIdx(newIdx);
+  };
+
+  /* Calculate from placed points */
   const handleCalculate = () => {
-    const cm = calculate();
-    if (cm == null) return;
+    if (!snapshot || !coin) return;
+    const { coinA, coinB, heel, toe } = points;
+    if (!coinA || !coinB || !heel || !toe) return;
+
+    // Convert percentages to image-space pixels
+    const px = (m) => ({ x: (m.x / 100) * snapshot.w, y: (m.y / 100) * snapshot.h });
+    const a = px(coinA);
+    const b = px(coinB);
+    const h = px(heel);
+    const t = px(toe);
+
+    const coinPx = Math.hypot(b.x - a.x, b.y - a.y);
+    const footPx = Math.hypot(t.x - h.x, t.y - h.y);
+    if (coinPx < 5) return;
+
+    const cm = (footPx / coinPx) * (coin.diameter / 10);
     const size = cmToSize(cm);
     const conv = convertSizes(size);
     const confidence = coin.diameter >= 25 ? "high" : coin.diameter >= 23 ? "medium" : "fair";
-    setResult({ cm, size, conversions: conv, confidence, coin });
+    setResult({
+      cm: Math.round(cm * 10) / 10,
+      size,
+      conversions: conv,
+      confidence,
+      coin,
+    });
     setStage("result");
   };
 
   const handleAddToCart = () => { setAdded(true); setCartCount((c) => c + 1); };
 
   const reset = () => {
-    setCoin(null); setSnapshot(null); setResult(null); setAdded(false);
-    setMarkers({
-      coinA: { x: 25, y: 70 }, coinB: { x: 40, y: 70 },
-      heel: { x: 60, y: 82 }, toe: { x: 60, y: 22 },
-    });
+    setCoin(null);
+    setSnapshot(null);
+    setResult(null);
+    setAdded(false);
+    setPoints({ coinA: null, coinB: null, heel: null, toe: null });
+    setActiveIdx(0);
     setStage("welcome");
   };
-
-  const updateMarker = (key) => (x, y) => setMarkers((p) => ({ ...p, [key]: { x, y } }));
 
   return (
     <div className="min-h-screen bg-white text-neutral-900 antialiased">
@@ -270,9 +259,11 @@ export default function App() {
         @keyframes scale-in { from { opacity: 0; transform: scale(0.96) } to { opacity: 1; transform: scale(1) } }
         @keyframes pulse-soft { 0%, 100% { opacity: 0.5 } 50% { opacity: 1 } }
         @keyframes cart-pop { 0% { transform: scale(0.6) } 60% { transform: scale(1.15) } 100% { transform: scale(1) } }
+        @keyframes ping-soft { 75%, 100% { transform: scale(1.8); opacity: 0 } }
         .anim-fade-up { animation: fade-up 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
         .anim-fade-in { animation: fade-in 0.4s ease both; }
         .anim-scale-in { animation: scale-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+        .anim-ping-soft { animation: ping-soft 1.5s cubic-bezier(0,0,0.2,1) infinite; }
       `}</style>
 
       <header className="fixed top-0 inset-x-0 z-30 border-b border-neutral-200/70 bg-white/85 backdrop-blur-md">
@@ -316,9 +307,17 @@ export default function App() {
         )}
 
         {stage === "align" && snapshot && coin && (
-          <AlignStage snapshot={snapshot} coin={coin} markers={markers} updateMarker={updateMarker}
-            overlayRef={overlayRef} onCalculate={handleCalculate}
-            onRetake={() => { setSnapshot(null); setStage("instructions"); }} />
+          <AlignStage
+            snapshot={snapshot}
+            coin={coin}
+            points={points}
+            activeIdx={activeIdx}
+            placePoint={placePoint}
+            nudgePoint={nudgePoint}
+            undoLast={undoLast}
+            onCalculate={handleCalculate}
+            onRetake={() => { setSnapshot(null); setActiveIdx(0); setPoints({ coinA: null, coinB: null, heel: null, toe: null }); setStage("instructions"); }}
+          />
         )}
 
         {stage === "result" && result && (
@@ -345,7 +344,7 @@ function Welcome({ onStart }) {
         {[
           { num: "1", title: "Pick your coin", sub: "₹1, ₹2, ₹5, ₹10, or older ₹1" },
           { num: "2", title: "Place beside your foot", sub: "Hold phone level, capture from above" },
-          { num: "3", title: "Tap to align", sub: "Mark coin edges and your heel + toe" },
+          { num: "3", title: "Tap four points", sub: "Coin edges, then heel and toe" },
           { num: "4", title: "Get your size", sub: "Real measurement, ready to shop" },
         ].map((item) => (
           <div key={item.num} className="flex items-start gap-4">
@@ -632,68 +631,256 @@ function SpiritLevel({ isLevel, bubble }) {
   );
 }
 
-/* Align */
-function AlignStage({ snapshot, coin, markers, updateMarker, overlayRef, onCalculate, onRetake }) {
-  // Use the captured image's true aspect ratio so marker percentages map 1:1
-  // to image pixel coordinates. No cropping, no distortion.
+/* ============================================================
+   Align — TAP TO PLACE markers (mobile-bulletproof)
+   ============================================================ */
+function AlignStage({ snapshot, coin, points, activeIdx, placePoint, nudgePoint, undoLast, onCalculate, onRetake }) {
+  const imgWrapRef = useRef(null);
+  const allPlaced = activeIdx >= POINT_SEQUENCE.length;
   const aspectRatio = `${snapshot.w} / ${snapshot.h}`;
+
+  // Convert tap event to image-coordinate percentage
+  const handleTap = (e) => {
+    if (!imgWrapRef.current || allPlaced) return;
+    const rect = imgWrapRef.current.getBoundingClientRect();
+    // Use clientX/Y for both touch and mouse — works reliably on iOS Safari
+    const clientX = e.clientX ?? e.changedTouches?.[0]?.clientX;
+    const clientY = e.clientY ?? e.changedTouches?.[0]?.clientY;
+    if (clientX == null || clientY == null) return;
+    const xPct = ((clientX - rect.left) / rect.width) * 100;
+    const yPct = ((clientY - rect.top) / rect.height) * 100;
+    placePoint(clamp(xPct, 0, 100), clamp(yPct, 0, 100));
+  };
+
+  const currentPoint = POINT_SEQUENCE[activeIdx];
 
   return (
     <div className="flex-1 flex flex-col anim-fade-up pt-6">
-      <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-3">Step 04 — Align</p>
-      <h2 className="font-display text-3xl md:text-4xl leading-[1.05] tracking-tight text-neutral-900 mb-3">
-        Place your four markers.
-      </h2>
-      <p className="text-neutral-600 leading-relaxed mb-5 text-sm">
-        Drag the <span className="text-amber-600 font-medium">amber points</span> to opposite edges of your{" "}
-        {coin.label} coin, and the <span className="text-neutral-900 font-medium">dark points</span> to your heel and the tip of your longest toe.
-      </p>
+      <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-3">Step 04 — Tap to Mark</p>
+
+      {!allPlaced ? (
+        <>
+          <h2 className="font-display text-3xl md:text-4xl leading-[1.05] tracking-tight text-neutral-900 mb-2">
+            Tap on <em className="italic font-light">{currentPoint.label.toLowerCase()}</em>.
+          </h2>
+          <p className="text-neutral-600 text-sm mb-4">
+            Point {activeIdx + 1} of {POINT_SEQUENCE.length}. Tap as precisely as you can — pinch to zoom if it helps.
+          </p>
+        </>
+      ) : (
+        <>
+          <h2 className="font-display text-3xl md:text-4xl leading-[1.05] tracking-tight text-neutral-900 mb-2">
+            All four points placed.
+          </h2>
+          <p className="text-neutral-600 text-sm mb-4">
+            Use the <strong>nudge controls</strong> below to fine-tune any point, then calculate.
+          </p>
+        </>
+      )}
+
+      {/* Image area — exact image aspect ratio so tap% maps 1:1 to image pixels */}
       <div
-        ref={overlayRef}
-        className="relative bg-black rounded-2xl overflow-hidden select-none mb-4 max-h-[70vh] mx-auto w-full"
-        style={{ aspectRatio }}
+        ref={imgWrapRef}
+        onClick={handleTap}
+        className="relative bg-black rounded-2xl overflow-hidden select-none mb-3 mx-auto w-full max-h-[60vh]"
+        style={{ aspectRatio, touchAction: "manipulation", cursor: allPlaced ? "default" : "crosshair" }}
       >
-        <img src={snapshot.src} alt="captured" className="absolute inset-0 w-full h-full object-fill" />
+        <img
+          src={snapshot.src}
+          alt="captured"
+          className="absolute inset-0 w-full h-full object-fill pointer-events-none"
+          draggable={false}
+        />
+
+        {/* Lines connecting placed points */}
         <svg className="absolute inset-0 w-full h-full pointer-events-none">
-          <line x1={`${markers.coinA.x}%`} y1={`${markers.coinA.y}%`} x2={`${markers.coinB.x}%`} y2={`${markers.coinB.y}%`}
-            stroke="#F59E0B" strokeWidth="2" strokeDasharray="6 4" />
-          <line x1={`${markers.heel.x}%`} y1={`${markers.heel.y}%`} x2={`${markers.toe.x}%`} y2={`${markers.toe.y}%`}
-            stroke="#fff" strokeWidth="2" strokeDasharray="6 4" />
+          {points.coinA && points.coinB && (
+            <line
+              x1={`${points.coinA.x}%`} y1={`${points.coinA.y}%`}
+              x2={`${points.coinB.x}%`} y2={`${points.coinB.y}%`}
+              stroke="#F59E0B" strokeWidth="2" strokeDasharray="6 4"
+            />
+          )}
+          {points.heel && points.toe && (
+            <line
+              x1={`${points.heel.x}%`} y1={`${points.heel.y}%`}
+              x2={`${points.toe.x}%`} y2={`${points.toe.y}%`}
+              stroke="#fff" strokeWidth="2" strokeDasharray="6 4"
+            />
+          )}
         </svg>
-        <DraggableMarker x={markers.coinA.x} y={markers.coinA.y} onMove={updateMarker("coinA")} label="Coin ◀" color="#F59E0B" containerRef={overlayRef} />
-        <DraggableMarker x={markers.coinB.x} y={markers.coinB.y} onMove={updateMarker("coinB")} label="Coin ▶" color="#F59E0B" containerRef={overlayRef} />
-        <DraggableMarker x={markers.heel.x} y={markers.heel.y} onMove={updateMarker("heel")} label="Heel" color="#171717" containerRef={overlayRef} />
-        <DraggableMarker x={markers.toe.x} y={markers.toe.y} onMove={updateMarker("toe")} label="Toe" color="#171717" containerRef={overlayRef} />
-        <div className="absolute top-3 left-3 text-[10px] tracking-[0.25em] uppercase text-white/80 bg-black/40 px-2 py-1 rounded-sm">
+
+        {/* Render all placed points */}
+        {POINT_SEQUENCE.map((p) => {
+          const pos = points[p.id];
+          if (!pos) return null;
+          return (
+            <div
+              key={p.id}
+              className="absolute pointer-events-none"
+              style={{
+                left: `${pos.x}%`,
+                top: `${pos.y}%`,
+                transform: "translate(-50%, -50%)",
+              }}
+            >
+              {/* Crosshair lines */}
+              <svg width="40" height="40" className="absolute" style={{ top: -20, left: -20 }}>
+                <line x1="20" y1="0" x2="20" y2="14" stroke={p.color} strokeWidth="1.5" opacity="0.7" />
+                <line x1="20" y1="26" x2="20" y2="40" stroke={p.color} strokeWidth="1.5" opacity="0.7" />
+                <line x1="0" y1="20" x2="14" y2="20" stroke={p.color} strokeWidth="1.5" opacity="0.7" />
+                <line x1="26" y1="20" x2="40" y2="20" stroke={p.color} strokeWidth="1.5" opacity="0.7" />
+              </svg>
+              {/* Center dot */}
+              <div
+                className="w-3 h-3 rounded-full border-2 border-white shadow-lg"
+                style={{ backgroundColor: p.color }}
+              />
+              {/* Label */}
+              <span
+                className="absolute left-5 top-1/2 -translate-y-1/2 text-[9px] tracking-[0.15em] uppercase font-medium whitespace-nowrap px-1.5 py-0.5 rounded-sm"
+                style={{
+                  backgroundColor: p.color,
+                  color: p.color === "#FFFFFF" ? "#000" : "#fff",
+                }}
+              >
+                {p.short}
+              </span>
+            </div>
+          );
+        })}
+
+        {/* Crosshair indicator while placing */}
+        {!allPlaced && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-black/70 backdrop-blur text-white text-[10px] tracking-[0.2em] uppercase px-3 py-1.5 rounded-full flex items-center gap-2">
+            <span
+              className="w-2 h-2 rounded-full anim-ping-soft"
+              style={{ backgroundColor: currentPoint.color }}
+            />
+            Tap: {currentPoint.short}
+          </div>
+        )}
+
+        <div className="absolute bottom-3 left-3 text-[10px] tracking-[0.25em] uppercase text-white/80 bg-black/40 px-2 py-1 rounded-sm">
           {coin.label} · {coin.diameter} mm
         </div>
       </div>
-      <div className="bg-neutral-50 border border-neutral-200/70 rounded-xl p-4 mb-4">
-        <div className="flex items-start gap-3 mb-3">
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-500 flex-shrink-0 mt-1" />
-          <div>
-            <p className="text-xs text-neutral-900 font-medium">Coin diameter</p>
-            <p className="text-[11px] text-neutral-500">Snap the amber points to the two extreme edges of your coin.</p>
-          </div>
+
+      {/* Status row + undo */}
+      <div className="flex items-center justify-between mb-4 px-1">
+        <div className="flex items-center gap-1.5">
+          {POINT_SEQUENCE.map((p, i) => {
+            const placed = !!points[p.id];
+            return (
+              <span
+                key={p.id}
+                className={`w-2 h-2 rounded-full transition-colors ${
+                  placed ? "" : "border border-neutral-300"
+                }`}
+                style={placed ? { backgroundColor: p.color === "#FFFFFF" ? "#171717" : p.color } : {}}
+                title={p.short}
+              />
+            );
+          })}
+          <span className="text-[10px] tracking-[0.2em] uppercase text-neutral-500 ml-2">
+            {Object.values(points).filter(Boolean).length} / 4 placed
+          </span>
         </div>
-        <div className="flex items-start gap-3">
-          <span className="w-2.5 h-2.5 rounded-full bg-neutral-900 flex-shrink-0 mt-1" />
-          <div>
-            <p className="text-xs text-neutral-900 font-medium">Foot endpoints</p>
-            <p className="text-[11px] text-neutral-500">Place the dark points at the back of your heel and the tip of your longest toe.</p>
-          </div>
-        </div>
+        {activeIdx > 0 && (
+          <button
+            onClick={undoLast}
+            className="flex items-center gap-1.5 text-[10px] tracking-[0.2em] uppercase text-neutral-500 hover:text-neutral-900 transition-colors"
+          >
+            <Undo2 size={11} /> Undo
+          </button>
+        )}
       </div>
+
+      {/* Nudge controls — shown after all points placed */}
+      {allPlaced && (
+        <div className="bg-neutral-50 border border-neutral-200/70 rounded-xl p-3 mb-4 anim-fade-up">
+          <p className="text-[10px] tracking-[0.25em] uppercase text-neutral-500 mb-2 px-1">
+            Fine-tune
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {POINT_SEQUENCE.map((p) => (
+              <NudgeControl
+                key={p.id}
+                point={p}
+                pos={points[p.id]}
+                onNudge={(dx, dy) => nudgePoint(p.id, dx, dy)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-3 mt-auto pt-2">
         <button onClick={onRetake}
           className="flex items-center justify-center gap-2 border border-neutral-200 text-neutral-700 hover:border-neutral-900 hover:text-neutral-900 py-4 px-5 rounded-full text-xs tracking-[0.25em] uppercase font-medium transition-colors">
           <RotateCcw size={14} />
         </button>
-        <button onClick={onCalculate}
-          className="group flex-1 flex items-center justify-center gap-3 bg-neutral-900 hover:bg-neutral-800 text-white py-4 rounded-full text-xs tracking-[0.25em] uppercase font-medium transition-colors">
+        <button
+          onClick={onCalculate}
+          disabled={!allPlaced}
+          className={`group flex-1 flex items-center justify-center gap-3 py-4 rounded-full text-xs tracking-[0.25em] uppercase font-medium transition-all ${
+            allPlaced
+              ? "bg-neutral-900 hover:bg-neutral-800 text-white"
+              : "bg-neutral-200 text-neutral-400 cursor-not-allowed"
+          }`}>
           <Ruler size={14} />
-          Calculate Size
+          {allPlaced ? "Calculate Size" : `Place ${4 - activeIdx} more`}
         </button>
+      </div>
+    </div>
+  );
+}
+
+function NudgeControl({ point, pos, onNudge }) {
+  const STEP = 0.5; // 0.5% per click
+  return (
+    <div className="bg-white border border-neutral-200 rounded-lg p-2">
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <span
+          className="w-2 h-2 rounded-full"
+          style={{ backgroundColor: point.color === "#FFFFFF" ? "#171717" : point.color }}
+        />
+        <span className="text-[10px] tracking-[0.15em] uppercase text-neutral-700 font-medium">
+          {point.short}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-0.5">
+        <span />
+        <button
+          onClick={() => onNudge(0, -STEP)}
+          className="h-7 bg-neutral-100 hover:bg-neutral-200 active:bg-neutral-300 rounded text-xs flex items-center justify-center"
+        >
+          ↑
+        </button>
+        <span />
+        <button
+          onClick={() => onNudge(-STEP, 0)}
+          className="h-7 bg-neutral-100 hover:bg-neutral-200 active:bg-neutral-300 rounded text-xs flex items-center justify-center"
+        >
+          ←
+        </button>
+        <span className="h-7 bg-neutral-50 rounded text-[8px] flex items-center justify-center text-neutral-400 tabular-nums">
+          {pos ? `${pos.x.toFixed(0)},${pos.y.toFixed(0)}` : ""}
+        </span>
+        <button
+          onClick={() => onNudge(STEP, 0)}
+          className="h-7 bg-neutral-100 hover:bg-neutral-200 active:bg-neutral-300 rounded text-xs flex items-center justify-center"
+        >
+          →
+        </button>
+        <span />
+        <button
+          onClick={() => onNudge(0, STEP)}
+          className="h-7 bg-neutral-100 hover:bg-neutral-200 active:bg-neutral-300 rounded text-xs flex items-center justify-center"
+        >
+          ↓
+        </button>
+        <span />
       </div>
     </div>
   );
