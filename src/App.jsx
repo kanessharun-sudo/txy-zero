@@ -535,28 +535,38 @@ function SpiritLevel({ isLevel, bubble }) {
    Align — TAP TO PLACE markers (mobile-bulletproof)
    ============================================================ */
 function AlignStage({ snapshot, points, activeIdx, placePoint, nudgePoint, undoLast, onCalculate, onRetake }) {
-  const imgWrapRef = useRef(null);
+  const imgRef = useRef(null);
   const allPlaced = activeIdx >= POINT_SEQUENCE.length;
   const aspectRatio = `${snapshot.w} / ${snapshot.h}`;
 
-  // Convert tap event to image-coordinate percentage
-  const handleTap = (e) => {
-    if (!imgWrapRef.current || allPlaced) return;
-    const rect = imgWrapRef.current.getBoundingClientRect();
-    // Use clientX/Y for both touch and mouse — works reliably on iOS Safari
-    const clientX = e.clientX ?? e.changedTouches?.[0]?.clientX;
-    const clientY = e.clientY ?? e.changedTouches?.[0]?.clientY;
-    if (clientX == null || clientY == null) return;
-    const xPct = ((clientX - rect.left) / rect.width) * 100;
-    const yPct = ((clientY - rect.top) / rect.height) * 100;
-    placePoint(clamp(xPct, 0, 100), clamp(yPct, 0, 100));
+  // Visual feedback for last tap location
+  const [lastTap, setLastTap] = useState(null);
+  useEffect(() => {
+    if (!lastTap) return;
+    const t = setTimeout(() => setLastTap(null), 800);
+    return () => clearTimeout(t);
+  }, [lastTap]);
+
+  /* Pointer-down handler attached directly to the IMG element.
+     We compute coords from getBoundingClientRect() of the image itself
+     (not a wrapper), which is the most reliable cross-browser approach. */
+  const handlePointerDown = (e) => {
+    if (!imgRef.current || allPlaced) return;
+    e.preventDefault();
+    const rect = imgRef.current.getBoundingClientRect();
+    const xPct = ((e.clientX - rect.left) / rect.width) * 100;
+    const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+    const cx = clamp(xPct, 0, 100);
+    const cy = clamp(yPct, 0, 100);
+    setLastTap({ x: cx, y: cy, ts: Date.now() });
+    placePoint(cx, cy);
   };
 
   const currentPoint = POINT_SEQUENCE[activeIdx];
 
   return (
     <div className="flex-1 flex flex-col anim-fade-up pt-6">
-      <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-3">Step 04 — Tap to Mark</p>
+      <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-3">Step 03 — Tap to Mark</p>
 
       {!allPlaced ? (
         <>
@@ -564,7 +574,7 @@ function AlignStage({ snapshot, points, activeIdx, placePoint, nudgePoint, undoL
             Tap on <em className="italic font-light">{currentPoint.label.toLowerCase()}</em>.
           </h2>
           <p className="text-neutral-600 text-sm mb-4">
-            Point {activeIdx + 1} of {POINT_SEQUENCE.length}. Tap as precisely as you can — pinch to zoom if it helps.
+            Point {activeIdx + 1} of {POINT_SEQUENCE.length}. Pinch to zoom in for precision.
           </p>
         </>
       ) : (
@@ -578,39 +588,60 @@ function AlignStage({ snapshot, points, activeIdx, placePoint, nudgePoint, undoL
         </>
       )}
 
-      {/* Image area — exact image aspect ratio so tap% maps 1:1 to image pixels */}
+      {/* Container with image as the single source of truth for coordinates */}
       <div
-        ref={imgWrapRef}
-        onClick={handleTap}
         className="relative bg-black rounded-2xl overflow-hidden select-none mb-3 mx-auto w-full max-h-[60vh]"
-        style={{ aspectRatio, touchAction: "manipulation", cursor: allPlaced ? "default" : "crosshair" }}
+        style={{ aspectRatio }}
       >
         <img
+          ref={imgRef}
           src={snapshot.src}
           alt="captured"
-          className="absolute inset-0 w-full h-full object-fill pointer-events-none"
+          onPointerDown={handlePointerDown}
+          className="absolute inset-0 w-full h-full object-fill block"
+          style={{
+            touchAction: "none",
+            cursor: allPlaced ? "default" : "crosshair",
+            WebkitUserSelect: "none",
+            WebkitTouchCallout: "none",
+          }}
           draggable={false}
         />
 
-        {/* Lines connecting placed points */}
-        <svg className="absolute inset-0 w-full h-full pointer-events-none">
+        {/* SVG overlay for connecting lines + last-tap ripple — purely visual, no input */}
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" preserveAspectRatio="none" viewBox="0 0 100 100">
           {points.paperA && points.paperB && (
             <line
-              x1={`${points.paperA.x}%`} y1={`${points.paperA.y}%`}
-              x2={`${points.paperB.x}%`} y2={`${points.paperB.y}%`}
-              stroke="#F59E0B" strokeWidth="2" strokeDasharray="6 4"
+              x1={points.paperA.x} y1={points.paperA.y}
+              x2={points.paperB.x} y2={points.paperB.y}
+              stroke="#F59E0B" strokeWidth="0.5" strokeDasharray="1.5 1" vectorEffect="non-scaling-stroke"
             />
           )}
           {points.heel && points.toe && (
             <line
-              x1={`${points.heel.x}%`} y1={`${points.heel.y}%`}
-              x2={`${points.toe.x}%`} y2={`${points.toe.y}%`}
-              stroke="#fff" strokeWidth="2" strokeDasharray="6 4"
+              x1={points.heel.x} y1={points.heel.y}
+              x2={points.toe.x} y2={points.toe.y}
+              stroke="#fff" strokeWidth="0.5" strokeDasharray="1.5 1" vectorEffect="non-scaling-stroke"
             />
+          )}
+          {lastTap && (
+            <circle
+              cx={lastTap.x}
+              cy={lastTap.y}
+              r="2"
+              fill="none"
+              stroke="#22c55e"
+              strokeWidth="0.5"
+              vectorEffect="non-scaling-stroke"
+              opacity="0.8"
+            >
+              <animate attributeName="r" from="0" to="6" dur="0.8s" />
+              <animate attributeName="opacity" from="1" to="0" dur="0.8s" />
+            </circle>
           )}
         </svg>
 
-        {/* Render all placed points */}
+        {/* Render placed point markers — pure visual, pointer-events disabled */}
         {POINT_SEQUENCE.map((p) => {
           const pos = points[p.id];
           if (!pos) return null;
@@ -624,19 +655,16 @@ function AlignStage({ snapshot, points, activeIdx, placePoint, nudgePoint, undoL
                 transform: "translate(-50%, -50%)",
               }}
             >
-              {/* Crosshair lines */}
               <svg width="40" height="40" className="absolute" style={{ top: -20, left: -20 }}>
                 <line x1="20" y1="0" x2="20" y2="14" stroke={p.color} strokeWidth="1.5" opacity="0.7" />
                 <line x1="20" y1="26" x2="20" y2="40" stroke={p.color} strokeWidth="1.5" opacity="0.7" />
                 <line x1="0" y1="20" x2="14" y2="20" stroke={p.color} strokeWidth="1.5" opacity="0.7" />
                 <line x1="26" y1="20" x2="40" y2="20" stroke={p.color} strokeWidth="1.5" opacity="0.7" />
               </svg>
-              {/* Center dot */}
               <div
                 className="w-3 h-3 rounded-full border-2 border-white shadow-lg"
                 style={{ backgroundColor: p.color }}
               />
-              {/* Label */}
               <span
                 className="absolute left-5 top-1/2 -translate-y-1/2 text-[9px] tracking-[0.15em] uppercase font-medium whitespace-nowrap px-1.5 py-0.5 rounded-sm"
                 style={{
@@ -650,9 +678,9 @@ function AlignStage({ snapshot, points, activeIdx, placePoint, nudgePoint, undoL
           );
         })}
 
-        {/* Crosshair indicator while placing */}
+        {/* Top instruction badge — pointer-events disabled so it doesn't block taps */}
         {!allPlaced && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-black/70 backdrop-blur text-white text-[10px] tracking-[0.2em] uppercase px-3 py-1.5 rounded-full flex items-center gap-2">
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-black/70 backdrop-blur text-white text-[10px] tracking-[0.2em] uppercase px-3 py-1.5 rounded-full flex items-center gap-2 pointer-events-none">
             <span
               className="w-2 h-2 rounded-full anim-ping-soft"
               style={{ backgroundColor: currentPoint.color }}
@@ -661,7 +689,7 @@ function AlignStage({ snapshot, points, activeIdx, placePoint, nudgePoint, undoL
           </div>
         )}
 
-        <div className="absolute bottom-3 left-3 text-[10px] tracking-[0.25em] uppercase text-white/80 bg-black/40 px-2 py-1 rounded-sm">
+        <div className="absolute bottom-3 left-3 text-[10px] tracking-[0.25em] uppercase text-white/80 bg-black/40 px-2 py-1 rounded-sm pointer-events-none">
           A4 · 21 cm short edge
         </div>
       </div>
@@ -669,7 +697,7 @@ function AlignStage({ snapshot, points, activeIdx, placePoint, nudgePoint, undoL
       {/* Status row + undo */}
       <div className="flex items-center justify-between mb-4 px-1">
         <div className="flex items-center gap-1.5">
-          {POINT_SEQUENCE.map((p, i) => {
+          {POINT_SEQUENCE.map((p) => {
             const placed = !!points[p.id];
             return (
               <span
