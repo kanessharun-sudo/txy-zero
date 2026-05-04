@@ -15,19 +15,12 @@ import {
 } from "lucide-react";
 
 /* ============================================================
-   Ten × You — Coin-Reference Sizer (v6)
-   Tap-to-place markers, mobile-bulletproof.
+   Ten × You — A4-Reference Sizer (v7)
+   Tap-to-place markers. A4 short edge (21cm) as known scale.
    ============================================================ */
 
 const LEVEL_THRESHOLD_DEG = 5;
-
-const COINS = [
-  { id: "r1", label: "₹1", diameter: 21.93, note: "Current (steel, small)", color: "#C8C8CC", accent: "#888" },
-  { id: "r2", label: "₹2", diameter: 23.0, note: "Current (steel)", color: "#C8C8CC", accent: "#888" },
-  { id: "r5", label: "₹5", diameter: 23.0, note: "Current (golden)", color: "#D4A85C", accent: "#8a6a2e" },
-  { id: "r10", label: "₹10", diameter: 27.0, note: "Bimetallic (two-tone)", color: "#C8C8CC", accent: "#D4A85C", bimetallic: true },
-  { id: "r1old", label: "₹1 (older)", diameter: 25.0, note: "Pre-2003, larger", color: "#B8B8BC", accent: "#666" },
-];
+const A4_SHORT_EDGE_CM = 21.0;
 
 const SIZE_CHART = [
   { cm: 22.3, size: 3 }, { cm: 22.7, size: 4 }, { cm: 23.1, size: 4 },
@@ -40,8 +33,8 @@ const SIZE_CHART = [
 ];
 
 const POINT_SEQUENCE = [
-  { id: "coinA", label: "Left edge of coin", color: "#F59E0B", short: "Coin ◀" },
-  { id: "coinB", label: "Right edge of coin", color: "#F59E0B", short: "Coin ▶" },
+  { id: "paperA", label: "First corner of the paper's short edge", color: "#F59E0B", short: "Paper ◀" },
+  { id: "paperB", label: "Other corner of the same short edge", color: "#F59E0B", short: "Paper ▶" },
   { id: "heel", label: "Back of your heel", color: "#FFFFFF", short: "Heel" },
   { id: "toe", label: "Tip of your longest toe", color: "#FFFFFF", short: "Toe" },
 ];
@@ -123,7 +116,6 @@ function useLeveller() {
 /* App */
 export default function App() {
   const [stage, setStage] = useState("welcome");
-  const [coin, setCoin] = useState(null);
   const [stream, setStream] = useState(null);
   const [snapshot, setSnapshot] = useState(null); // { src, w, h }
   const [cameraError, setCameraError] = useState(null);
@@ -133,9 +125,9 @@ export default function App() {
   const videoRef = useRef(null);
   const lev = useLeveller();
 
-  // Markers — null until placed; positions stored as % of image natural dimensions (0–100)
-  const [points, setPoints] = useState({ coinA: null, coinB: null, heel: null, toe: null });
-  const [activeIdx, setActiveIdx] = useState(0); // which point in POINT_SEQUENCE to place next
+  // Markers — null until placed; positions stored as % of image (0–100)
+  const [points, setPoints] = useState({ paperA: null, paperB: null, heel: null, toe: null });
+  const [activeIdx, setActiveIdx] = useState(0);
 
   /* Camera */
   const startCamera = useCallback(async () => {
@@ -168,7 +160,7 @@ export default function App() {
     canvas.height = h;
     canvas.getContext("2d").drawImage(v, 0, 0);
     setSnapshot({ src: canvas.toDataURL("image/jpeg", 0.92), w, h });
-    setPoints({ coinA: null, coinB: null, heel: null, toe: null });
+    setPoints({ paperA: null, paperB: null, heel: null, toe: null });
     setActiveIdx(0);
     stopCamera();
     setStage("align");
@@ -207,31 +199,28 @@ export default function App() {
 
   /* Calculate from placed points */
   const handleCalculate = () => {
-    if (!snapshot || !coin) return;
-    const { coinA, coinB, heel, toe } = points;
-    if (!coinA || !coinB || !heel || !toe) return;
+    if (!snapshot) return;
+    const { paperA, paperB, heel, toe } = points;
+    if (!paperA || !paperB || !heel || !toe) return;
 
     // Convert percentages to image-space pixels
     const px = (m) => ({ x: (m.x / 100) * snapshot.w, y: (m.y / 100) * snapshot.h });
-    const a = px(coinA);
-    const b = px(coinB);
+    const a = px(paperA);
+    const b = px(paperB);
     const h = px(heel);
     const t = px(toe);
 
-    const coinPx = Math.hypot(b.x - a.x, b.y - a.y);
+    const paperPx = Math.hypot(b.x - a.x, b.y - a.y);
     const footPx = Math.hypot(t.x - h.x, t.y - h.y);
-    if (coinPx < 5) return;
+    if (paperPx < 5) return;
 
-    const cm = (footPx / coinPx) * (coin.diameter / 10);
+    const cm = (footPx / paperPx) * A4_SHORT_EDGE_CM;
     const size = cmToSize(cm);
     const conv = convertSizes(size);
-    const confidence = coin.diameter >= 25 ? "high" : coin.diameter >= 23 ? "medium" : "fair";
     setResult({
       cm: Math.round(cm * 10) / 10,
       size,
       conversions: conv,
-      confidence,
-      coin,
     });
     setStage("result");
   };
@@ -239,11 +228,10 @@ export default function App() {
   const handleAddToCart = () => { setAdded(true); setCartCount((c) => c + 1); };
 
   const reset = () => {
-    setCoin(null);
     setSnapshot(null);
     setResult(null);
     setAdded(false);
-    setPoints({ coinA: null, coinB: null, heel: null, toe: null });
+    setPoints({ paperA: null, paperB: null, heel: null, toe: null });
     setActiveIdx(0);
     setStage("welcome");
   };
@@ -283,22 +271,18 @@ export default function App() {
       </header>
 
       <main className="max-w-2xl mx-auto px-5 pt-20 pb-10 min-h-screen flex flex-col">
-        {stage === "welcome" && <Welcome onStart={() => setStage("coin")} />}
-
-        {stage === "coin" && (
-          <CoinPicker value={coin} onChange={setCoin}
-            onNext={async () => { await lev.requestSensor(); setStage("permissions"); }}
-            onBack={() => setStage("welcome")} />
+        {stage === "welcome" && (
+          <Welcome onStart={async () => { await lev.requestSensor(); setStage("permissions"); }} />
         )}
 
         {stage === "permissions" && (
-          <PermissionsDialog onAccept={() => setStage("instructions")} onCancel={() => setStage("coin")} />
+          <PermissionsDialog onAccept={() => setStage("instructions")} onCancel={() => setStage("welcome")} />
         )}
 
         {stage === "instructions" && (
-          <Instructions coin={coin} source={lev.source} cameraError={cameraError}
+          <Instructions source={lev.source} cameraError={cameraError}
             onContinue={async () => { await startCamera(); setStage("camera"); }}
-            onBack={() => setStage("coin")} />
+            onBack={() => setStage("welcome")} />
         )}
 
         {stage === "camera" && (
@@ -306,17 +290,16 @@ export default function App() {
             onBack={() => { stopCamera(); setStage("instructions"); }} />
         )}
 
-        {stage === "align" && snapshot && coin && (
+        {stage === "align" && snapshot && (
           <AlignStage
             snapshot={snapshot}
-            coin={coin}
             points={points}
             activeIdx={activeIdx}
             placePoint={placePoint}
             nudgePoint={nudgePoint}
             undoLast={undoLast}
             onCalculate={handleCalculate}
-            onRetake={() => { setSnapshot(null); setActiveIdx(0); setPoints({ coinA: null, coinB: null, heel: null, toe: null }); setStage("instructions"); }}
+            onRetake={() => { setSnapshot(null); setActiveIdx(0); setPoints({ paperA: null, paperB: null, heel: null, toe: null }); setStage("instructions"); }}
           />
         )}
 
@@ -332,20 +315,20 @@ export default function App() {
 function Welcome({ onStart }) {
   return (
     <div className="flex-1 flex flex-col anim-fade-up justify-center min-h-[80vh] pt-10">
-      <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-4">Coin-Calibrated Sizing</p>
+      <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-4">A4-Calibrated Sizing</p>
       <h1 className="font-display text-5xl md:text-6xl leading-[1.02] tracking-tight text-neutral-900 mb-6">
-        Measure your foot with a <em className="italic font-light">single coin</em>.
+        Measure your foot with a <em className="italic font-light">single sheet of A4</em>.
       </h1>
       <p className="text-neutral-600 leading-relaxed mb-10 max-w-md text-base">
-        Place any rupee coin next to your foot. We use it as a known scale to measure
-        your foot length precisely — no tape, no guesswork.
+        Place an A4 sheet on the floor beside your foot. We use its known size as a precise scale
+        reference — no tape, no guesswork.
       </p>
       <div className="space-y-4 mb-12">
         {[
-          { num: "1", title: "Pick your coin", sub: "₹1, ₹2, ₹5, ₹10, or older ₹1" },
-          { num: "2", title: "Place beside your foot", sub: "Hold phone level, capture from above" },
-          { num: "3", title: "Tap four points", sub: "Coin edges, then heel and toe" },
-          { num: "4", title: "Get your size", sub: "Real measurement, ready to shop" },
+          { num: "1", title: "Grab any A4 sheet", sub: "Standard 21 × 29.7 cm — printer paper, notebook page, anything" },
+          { num: "2", title: "Place beside your foot", sub: "Sheet flat on the floor, foot beside it (not on top)" },
+          { num: "3", title: "Capture from above", sub: "Hold phone level, both foot and paper in frame" },
+          { num: "4", title: "Tap four points", sub: "Two corners of the short edge, then heel and toe" },
         ].map((item) => (
           <div key={item.num} className="flex items-start gap-4">
             <span className="w-9 h-9 rounded-full bg-neutral-900 text-white flex items-center justify-center font-display text-sm flex-shrink-0">
@@ -367,88 +350,6 @@ function Welcome({ onStart }) {
   );
 }
 
-/* Coin Picker */
-function CoinSwatch({ coin }) {
-  return (
-    <svg viewBox="0 0 64 64" className="w-12 h-12">
-      <defs>
-        <radialGradient id={`g-${coin.id}`} cx="35%" cy="30%" r="70%">
-          <stop offset="0%" stopColor={coin.color} stopOpacity="1" />
-          <stop offset="100%" stopColor={coin.accent} stopOpacity="1" />
-        </radialGradient>
-      </defs>
-      {coin.bimetallic ? (
-        <>
-          <circle cx="32" cy="32" r="28" fill={coin.color} stroke={coin.accent} strokeWidth="1" />
-          <circle cx="32" cy="32" r="17" fill={coin.accent} opacity="0.85" />
-          <text x="32" y="38" textAnchor="middle" fontSize="14" fontWeight="600" fill="#1a1a1a" fontFamily="Inter, sans-serif">
-            {coin.label.replace("₹", "")}
-          </text>
-        </>
-      ) : (
-        <>
-          <circle cx="32" cy="32" r="28" fill={`url(#g-${coin.id})`} stroke={coin.accent} strokeWidth="1" />
-          <text x="32" y="40" textAnchor="middle" fontSize="20" fontWeight="500" fill="#1a1a1a" fontFamily="Inter, sans-serif">
-            {coin.label}
-          </text>
-        </>
-      )}
-    </svg>
-  );
-}
-
-function CoinPicker({ value, onChange, onNext, onBack }) {
-  return (
-    <div className="flex-1 flex flex-col anim-fade-up pt-6">
-      <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-3">Step 01 — Reference</p>
-      <h2 className="font-display text-4xl md:text-5xl leading-[1.05] tracking-tight text-neutral-900 mb-3">
-        Which coin do you have?
-      </h2>
-      <p className="text-neutral-600 leading-relaxed mb-8 max-w-md">
-        Pick any Indian coin you have on hand. We'll use its known size as a reference.
-      </p>
-      <div className="space-y-3 mb-8">
-        {COINS.map((c) => (
-          <button key={c.id} onClick={() => onChange(c)}
-            className={`w-full text-left p-4 rounded-2xl border transition-all flex items-center gap-4 ${
-              value?.id === c.id ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 hover:border-neutral-400"
-            }`}>
-            <div className={`w-14 h-14 rounded-full flex items-center justify-center flex-shrink-0 ${
-              value?.id === c.id ? "bg-white/10" : "bg-neutral-50"
-            }`}>
-              <CoinSwatch coin={c} />
-            </div>
-            <div className="flex-1">
-              <p className="font-display text-2xl">{c.label}</p>
-              <p className={`text-xs mt-0.5 ${value?.id === c.id ? "text-white/60" : "text-neutral-500"}`}>
-                {c.note} · {c.diameter} mm
-              </p>
-            </div>
-            {value?.id === c.id && <Check size={18} strokeWidth={2} />}
-          </button>
-        ))}
-      </div>
-      <div className="flex items-start gap-2 text-xs text-neutral-500 leading-relaxed mb-2">
-        <Info size={13} strokeWidth={1.5} className="flex-shrink-0 mt-0.5" />
-        <span>Larger coins (₹10, older ₹1) give the most accurate measurement. Use what you have.</span>
-      </div>
-      <div className="flex items-center gap-3 mt-auto pt-8">
-        <button onClick={onBack}
-          className="flex items-center justify-center gap-2 border border-neutral-200 text-neutral-700 hover:border-neutral-900 hover:text-neutral-900 py-4 px-5 rounded-full text-xs tracking-[0.25em] uppercase font-medium transition-colors">
-          <ArrowLeft size={14} />
-        </button>
-        <button onClick={onNext} disabled={!value}
-          className={`group flex-1 flex items-center justify-center gap-3 py-4 rounded-full text-xs tracking-[0.25em] uppercase font-medium transition-all ${
-            !value ? "bg-neutral-200 text-neutral-400 cursor-not-allowed" : "bg-neutral-900 hover:bg-neutral-800 text-white"
-          }`}>
-          Continue
-          <ArrowRight size={14} className={!value ? "" : "group-hover:translate-x-0.5 transition-transform"} />
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /* Permissions */
 function PermissionsDialog({ onAccept, onCancel }) {
   return (
@@ -464,7 +365,7 @@ function PermissionsDialog({ onAccept, onCancel }) {
         </p>
         <ul className="space-y-3 mb-7">
           {[
-            { icon: <Camera size={14} strokeWidth={1.5} />, text: "Camera — to capture coin and foot" },
+            { icon: <Camera size={14} strokeWidth={1.5} />, text: "Camera — to capture paper and foot" },
             { icon: <Smartphone size={14} strokeWidth={1.5} />, text: "Motion sensors — for phone levelling" },
             { icon: <ShieldCheck size={14} strokeWidth={1.5} />, text: "On-device only — nothing stored" },
           ].map((item, i) => (
@@ -488,38 +389,37 @@ function PermissionsDialog({ onAccept, onCancel }) {
 }
 
 /* Instructions */
-function Instructions({ coin, source, onContinue, onBack, cameraError }) {
+function Instructions({ source, onContinue, onBack, cameraError }) {
   return (
     <div className="flex-1 flex flex-col anim-fade-up pt-6">
-      <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-3">Step 02 — Setup</p>
+      <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-3">Step 01 — Setup</p>
       <h2 className="font-display text-4xl md:text-5xl leading-[1.05] tracking-tight text-neutral-900 mb-3">
-        Place your <em className="italic font-light">{coin.label}</em> next to your foot.
+        Place an <em className="italic font-light">A4 sheet</em> beside your foot.
       </h2>
       <p className="text-neutral-600 leading-relaxed mb-8 max-w-md">
-        Stand with bare foot on a flat surface. Set the coin flat on the floor, beside your foot.
-        Hold your phone parallel to the floor and capture from directly above.
+        Lay the A4 flat on the floor, with the <strong>short edge</strong> running parallel to your
+        foot. Stand bare-footed beside it (not on top). Hold your phone parallel to the floor and
+        capture from above — both the paper and your foot should be fully in frame.
       </p>
       <div className="relative bg-neutral-50 rounded-2xl aspect-[5/4] mb-6 overflow-hidden border border-neutral-200/70">
         <svg viewBox="0 0 400 320" className="absolute inset-0 w-full h-full p-6">
+          {/* Floor grid */}
           {[...Array(8)].map((_, i) => (
             <line key={i} x1="20" y1={40 + i * 35} x2="380" y2={40 + i * 35} stroke="#171717" strokeWidth="0.4" strokeDasharray="2 4" opacity="0.12" />
           ))}
-          <path d="M210 60 Q245 65 252 110 Q260 175 252 230 Q246 268 230 272 Q205 276 198 258 Q190 220 194 165 Q198 95 210 60 Z" stroke="#171717" strokeWidth="1.5" fill="white" />
-          <ellipse cx="208" cy="68" rx="6" ry="4" fill="#171717" opacity="0.18" />
-          <ellipse cx="225" cy="66" rx="5" ry="4" fill="#171717" opacity="0.18" />
-          <ellipse cx="240" cy="72" rx="4" ry="3" fill="#171717" opacity="0.18" />
-          <g transform="translate(120 200)">
-            <circle cx="0" cy="0" r="22" fill="#D4A85C" stroke="#8a6a2e" strokeWidth="1.2" />
-            <circle cx="0" cy="0" r="22" fill="url(#coinGrad)" />
-            <text x="0" y="6" textAnchor="middle" fontSize="14" fontWeight="500" fill="#1a1a1a">₹</text>
-          </g>
-          <defs>
-            <radialGradient id="coinGrad" cx="35%" cy="30%" r="70%">
-              <stop offset="0%" stopColor="#E8C77A" />
-              <stop offset="100%" stopColor="#8a6a2e" />
-            </radialGradient>
-          </defs>
-          <rect x="160" y="12" width="80" height="22" rx="4" fill="#171717" opacity="0.85" />
+          {/* A4 paper — short edge horizontal, long edge vertical */}
+          <rect x="80" y="60" width="100" height="220" rx="2" fill="white" stroke="#171717" strokeWidth="1.5" />
+          {/* short-edge highlight (top) */}
+          <line x1="80" y1="60" x2="180" y2="60" stroke="#F59E0B" strokeWidth="3" />
+          <text x="130" y="48" textAnchor="middle" fontSize="9" fill="#F59E0B" fontFamily="Fraunces, serif" fontStyle="italic">21 cm — short edge</text>
+          {/* Foot beside paper, parallel orientation */}
+          <path d="M250 80 Q285 85 292 130 Q300 195 292 250 Q286 285 270 290 Q245 294 238 276 Q230 235 234 180 Q238 115 250 80 Z"
+            stroke="#171717" strokeWidth="1.5" fill="white" />
+          <ellipse cx="248" cy="88" rx="6" ry="4" fill="#171717" opacity="0.18" />
+          <ellipse cx="265" cy="86" rx="5" ry="4" fill="#171717" opacity="0.18" />
+          <ellipse cx="280" cy="92" rx="4" ry="3" fill="#171717" opacity="0.18" />
+          {/* Phone hint */}
+          <rect x="155" y="12" width="90" height="22" rx="4" fill="#171717" opacity="0.85" />
           <text x="200" y="27" textAnchor="middle" fontSize="9" fill="white" fontFamily="Fraunces, serif" fontStyle="italic">phone above</text>
         </svg>
         <div className="absolute bottom-3 right-3 text-[9px] tracking-[0.2em] uppercase text-neutral-400">Fig. 01</div>
@@ -583,7 +483,7 @@ function CameraStage({ videoRef, lev, onCapture, onBack }) {
         <div className="absolute bottom-28 left-1/2 -translate-x-1/2 text-center px-4">
           <p className={`text-xs font-medium tracking-wide transition-colors ${isLevel ? "text-emerald-300" : "text-white/85"}`}
             style={{ animation: !isLevel ? "pulse-soft 2s ease-in-out infinite" : undefined }}>
-            {isLevel ? "Hold steady — both foot and coin in frame" : "Tilt the phone until level"}
+            {isLevel ? "Hold steady — both foot and paper in frame" : "Tilt the phone until level"}
           </p>
         </div>
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2">
@@ -634,7 +534,7 @@ function SpiritLevel({ isLevel, bubble }) {
 /* ============================================================
    Align — TAP TO PLACE markers (mobile-bulletproof)
    ============================================================ */
-function AlignStage({ snapshot, coin, points, activeIdx, placePoint, nudgePoint, undoLast, onCalculate, onRetake }) {
+function AlignStage({ snapshot, points, activeIdx, placePoint, nudgePoint, undoLast, onCalculate, onRetake }) {
   const imgWrapRef = useRef(null);
   const allPlaced = activeIdx >= POINT_SEQUENCE.length;
   const aspectRatio = `${snapshot.w} / ${snapshot.h}`;
@@ -694,10 +594,10 @@ function AlignStage({ snapshot, coin, points, activeIdx, placePoint, nudgePoint,
 
         {/* Lines connecting placed points */}
         <svg className="absolute inset-0 w-full h-full pointer-events-none">
-          {points.coinA && points.coinB && (
+          {points.paperA && points.paperB && (
             <line
-              x1={`${points.coinA.x}%`} y1={`${points.coinA.y}%`}
-              x2={`${points.coinB.x}%`} y2={`${points.coinB.y}%`}
+              x1={`${points.paperA.x}%`} y1={`${points.paperA.y}%`}
+              x2={`${points.paperB.x}%`} y2={`${points.paperB.y}%`}
               stroke="#F59E0B" strokeWidth="2" strokeDasharray="6 4"
             />
           )}
@@ -762,7 +662,7 @@ function AlignStage({ snapshot, coin, points, activeIdx, placePoint, nudgePoint,
         )}
 
         <div className="absolute bottom-3 left-3 text-[10px] tracking-[0.25em] uppercase text-white/80 bg-black/40 px-2 py-1 rounded-sm">
-          {coin.label} · {coin.diameter} mm
+          A4 · 21 cm short edge
         </div>
       </div>
 
@@ -888,12 +788,6 @@ function NudgeControl({ point, pos, onNudge }) {
 
 /* Result */
 function ResultStage({ result, added, onAdd, onReset }) {
-  const confidenceLabel = {
-    high: { text: "High confidence", color: "text-emerald-600", dot: "bg-emerald-500" },
-    medium: { text: "Good confidence", color: "text-amber-600", dot: "bg-amber-500" },
-    fair: { text: "Fair — try larger coin for more precision", color: "text-neutral-600", dot: "bg-neutral-400" },
-  }[result.confidence];
-
   return (
     <div className="flex-1 flex flex-col anim-fade-up pt-6">
       <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-400 mb-3">Your Size</p>
@@ -901,8 +795,8 @@ function ResultStage({ result, added, onAdd, onReset }) {
         Measured with <em className="italic font-light">precision</em>.
       </h2>
       <div className="flex items-center gap-2 mb-8">
-        <span className={`w-1.5 h-1.5 rounded-full ${confidenceLabel.dot}`} />
-        <span className={`text-xs ${confidenceLabel.color} font-medium`}>{confidenceLabel.text}</span>
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+        <span className="text-xs text-emerald-600 font-medium">Calibrated against A4 — high confidence</span>
       </div>
       <div className="relative bg-neutral-900 text-white rounded-2xl p-8 mb-4 overflow-hidden">
         <div className="absolute -top-16 -right-16 w-64 h-64 rounded-full bg-white/5 blur-3xl" />
@@ -917,7 +811,7 @@ function ResultStage({ result, added, onAdd, onReset }) {
             <span>Foot length: <span className="font-medium text-white">{result.cm.toFixed(1)} cm</span></span>
           </div>
           <p className="text-xs text-white/50 mt-2">
-            Calibrated against {result.coin.label} ({result.coin.diameter} mm)
+            Calibrated against A4 short edge (21.0 cm)
           </p>
         </div>
       </div>
